@@ -28,7 +28,7 @@ from nanochat.flash_attention import flash_attn
 @dataclass
 class GPTConfig:
     sequence_len: int = 2048
-    vocab_size: int = 32768
+    vocab_size: int = 98304 # 96K (3 * 32,768, aligned to multiples of 128/256 for GPU tensor cores)
     n_layer: int = 12
     n_head: int = 6 # number of query heads
     n_kv_head: int = 6 # number of key/value heads (GQA)

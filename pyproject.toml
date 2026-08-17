@@ -1,9 +1,9 @@
 [project]
-name = "nanochat"
+name = "galactus"
 version = "0.1.0"
-description = "the minimal full-stack ChatGPT clone"
+description = "High-Performance Full-Stack LLM Training & Deep Reasoning Engine (fork of nanochat)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.13"
 dependencies = [
     "filelock>=3.19.0",
     "kernels>=0.11.7",
@@ -12,7 +12,7 @@ dependencies = [
     "pyarrow>=21.0.0",
     "rustbpe>=0.1.0",
     "tiktoken>=0.11.0",
-    "torch==2.9.1",
+    "torch",
     "wandb>=0.21.3",
 ]
 
@@ -25,6 +25,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
@@ -33,11 +34,12 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
-# target torch to cuda 12.8 or CPU
+# target torch to CUDA 12.8, AMD ROCm 6.2, or CPU
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu128", extra = "gpu" },
+    { index = "pytorch-rocm", extra = "rocm" },
 ]
 
 [[tool.uv.index]]
@@ -50,13 +52,22 @@ name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.2"
+explicit = true
+
 [project.optional-dependencies]
 cpu = [
     "setuptools>=65.0.0",
-    "torch==2.9.1",
+    "torch",
 ]
 gpu = [
-    "torch==2.9.1",
+    "torch",
+]
+rocm = [
+    "torch",
+    "flash-attn; sys_platform == 'linux'",
 ]
 
 [tool.uv]
@@ -65,5 +76,6 @@ conflicts = [
     [
         { extra = "cpu" },
         { extra = "gpu" },
+        { extra = "rocm" },
     ],
 ]

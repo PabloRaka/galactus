@@ -75,6 +75,12 @@ parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
+# Dataset Domain Mixture (Multi-Source Hybrid Pretraining)
+parser.add_argument("--web-ratio", type=float, default=0.30, help="ratio of general web & STEM data (ClimbMix) in pretraining stream (default: 0.30)")
+parser.add_argument("--indonesian-ratio", type=float, default=0.10, help="ratio of Indonesian encyclopedic & knowledge text in pretraining stream (default: 0.10)")
+parser.add_argument("--code-ratio", type=float, default=0.30, help="ratio of coding/programming data in pretraining stream (default: 0.30)")
+parser.add_argument("--math-ratio", type=float, default=0.25, help="ratio of math/LaTeX reasoning data in pretraining stream (default: 0.25)")
+parser.add_argument("--terminal-ratio", type=float, default=0.05, help="ratio of Linux/Bash/Zsh/PowerShell terminal commands in pretraining stream (default: 0.05)")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
@@ -100,21 +106,15 @@ use_dummy_wandb = args.run == "dummy" or not master_process
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", name=args.run, config=user_config)
 
 # Flash Attention status
-from nanochat.flash_attention import USE_FA3
-using_fa3 = USE_FA3
-if using_fa3:
-    print0("✓ Using Flash Attention 3: efficient, new and awesome.")
+from nanochat.flash_attention import ATTENTION_BACKEND, USE_FA3, USE_FA2, IS_ROCM, HAS_FA3, HAS_FA2
+print0(f"Attention Engine: {ATTENTION_BACKEND}")
+if USE_FA3 or USE_FA2:
+    print0(f"✓ Using {ATTENTION_BACKEND}: high performance GPU kernel active.")
+elif IS_ROCM:
+    print0("✓ Using AMD ROCm SDPA: automatically dispatches to AMD Composable Kernel (CK) FlashAttention.")
 else:
-    print0("!" * 80)
-    if HAS_FA3 and COMPUTE_DTYPE != torch.bfloat16:
-        print0(f"WARNING: Flash Attention 3 only supports bf16, but COMPUTE_DTYPE={COMPUTE_DTYPE}. Using PyTorch SDPA fallback")
-    else:
-        print0("WARNING: Flash Attention 3 not available, using PyTorch SDPA fallback")
-    print0("WARNING: Training will be less efficient without FA3")
     if args.window_pattern != "L":
-        print0(f"WARNING: SDPA has no support for sliding window attention (window_pattern='{args.window_pattern}'). Your GPU utilization will be terrible.")
-        print0("WARNING: Recommend using --window-pattern L for full context attention without alternating sliding window patterns.")
-    print0("!" * 80)
+        print0(f"Note: SDPA fallback active. Recommend using --window-pattern L for full context attention.")
 
 # -----------------------------------------------------------------------------
 # Tokenizer will be useful for evaluation and also we need the vocab size to init the model
@@ -326,10 +326,25 @@ if scaler is not None:
     print0("GradScaler enabled for fp16 training")
 
 # -----------------------------------------------------------------------------
-# Initialize the DataLoaders for train/val
+# Initialize the DataLoaders for train/val with domain proportions
+domain_weights = {
+    "climbmix": args.web_ratio,
+    "indonesian": args.indonesian_ratio,
+    "code": args.code_ratio,
+    "math": args.math_ratio,
+    "terminal": args.terminal_ratio,
+}
+print0(f"Pretraining Domain Mixture: {domain_weights}")
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
-train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
-build_val_loader = lambda: tokenizing_distributed_data_loader_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split="val", device=device)
+train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(
+    tokenizer, args.device_batch_size, args.max_seq_len, split="train",
+    device=device, resume_state_dict=dataloader_resume_state_dict,
+    domain_weights=domain_weights,
+)
+build_val_loader = lambda: tokenizing_distributed_data_loader_bos_bestfit(
+    tokenizer, args.device_batch_size, args.max_seq_len, split="val",
+    device=device, domain_weights=domain_weights,
+)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 
 # -----------------------------------------------------------------------------

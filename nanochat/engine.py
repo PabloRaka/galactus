@@ -21,16 +21,24 @@ from nanochat.common import compute_init, autodetect_device_type, COMPUTE_DTYPE
 from nanochat.checkpoint_manager import load_model
 
 # -----------------------------------------------------------------------------
-# Calculator tool helpers
+# Tool registry: maps tool name -> execution function
+# Each tool function takes a dict of arguments and returns a string result (or None on failure)
+
+import json
+
 @contextmanager
 def timeout(duration, formula):
-    def timeout_handler(signum, frame):
-        raise Exception(f"'{formula}': timed out after {duration} seconds")
-
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(duration)
-    yield
-    signal.alarm(0)
+    has_alarm = hasattr(signal, "SIGALRM") and hasattr(signal, "alarm")
+    if has_alarm:
+        def timeout_handler(signum, frame):
+            raise Exception(f"'{formula}': timed out after {duration} seconds")
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(duration)
+    try:
+        yield
+    finally:
+        if has_alarm:
+            signal.alarm(0)
 
 def eval_with_timeout(formula, max_time=3):
     try:
@@ -38,45 +46,125 @@ def eval_with_timeout(formula, max_time=3):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SyntaxWarning)
                 return eval(formula, {"__builtins__": {}}, {})
+    except Exception:
+        return None
+
+from nanochat.execution import execute_code
+
+def execute_python(args):
+    """
+    Execute Python code or expression.
+    Fast path: pure math expressions evaluated in-process with timeout.
+    General path: multi-line code/print statements evaluated in isolated sandbox.
+    """
+    expr = args.get("code") or args.get("expression") or args.get("expr") or ""
+    if not expr:
+        return None
+
+    # Fast path for pure math (e.g. GSM8K calculator)
+    cleaned = expr.replace(",", "")
+    if all(x in "0123456789*+-/.() " for x in cleaned) and "**" not in cleaned:
+        res = eval_with_timeout(cleaned)
+        if res is not None:
+            return str(res)
+
+    # General sandboxed execution (supports print, loops, functions, variables)
+    exec_res = execute_code(expr, timeout=5.0)
+    if exec_res.success:
+        out = exec_res.stdout.strip()
+        return out if out else "(executed successfully, no output)"
+    else:
+        return f"[error] {exec_res.error or 'execution failed'}"
+
+def execute_bash(args):
+    """
+    Execute a shell command via subprocess with timeout and output cap.
+    Args: {"name": "bash", "command": "ls -la"}
+    """
+    import subprocess
+    command = args.get("command", "")
+    if not command:
+        return None
+    try:
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True,
+            timeout=10,  # ponytail: 10s ceiling, upgrade to configurable if needed
+        )
+        output = result.stdout
+        if result.returncode != 0 and result.stderr:
+            output += f"\n[stderr] {result.stderr}"
+        # Cap output to prevent token explosion during inference
+        max_chars = 2000
+        if len(output) > max_chars:
+            output = output[:max_chars] + f"\n... (truncated, {len(output)} total chars)"
+        return output.strip() if output.strip() else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "[error] command timed out after 10 seconds"
     except Exception as e:
-        signal.alarm(0)
-        # print(f"Warning: Failed to eval {formula}, exception: {e}") # it's ok ignore wrong calculator usage
-        return None
+        return f"[error] {e}"
 
-def use_calculator(expr):
+def execute_web_search(args):
     """
-    Evaluate a Python expression safely.
-    Supports both math expressions and string operations like .count()
+    Search the web using DuckDuckGo instant answers API (no API key needed).
+    Args: {"name": "web_search", "query": "python list comprehension"}
     """
-    # Remove commas from numbers
-    expr = expr.replace(",", "")
-
-    # Check if it's a pure math expression (old behavior)
-    if all([x in "0123456789*+-/.() " for x in expr]):
-        if "**" in expr:  # disallow power operator
-            return None
-        return eval_with_timeout(expr)
-
-    # Check if it's a string operation we support
-    # Allow: strings (single/double quotes), .count(), letters, numbers, spaces, parens
-    allowed_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'\"()._ "
-    if not all([x in allowed_chars for x in expr]):
+    import urllib.request
+    import urllib.parse
+    query = args.get("query", "")
+    if not query:
         return None
+    try:
+        url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
+            "q": query, "format": "json", "no_html": "1", "skip_disambig": "1"
+        })
+        req = urllib.request.Request(url, headers={"User-Agent": "nanochat/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        # Build a concise result from the API response
+        parts = []
+        if data.get("AbstractText"):
+            parts.append(data["AbstractText"])
+        if data.get("Answer"):
+            parts.append(data["Answer"])
+        for topic in (data.get("RelatedTopics") or [])[:3]:
+            if isinstance(topic, dict) and topic.get("Text"):
+                parts.append(f"- {topic['Text']}")
+        if not parts:
+            return f"No instant results found for: {query}"
+        return "\n".join(parts)
+    except Exception as e:
+        return f"[error] web search failed: {e}"
 
-    # Disallow dangerous patterns
-    dangerous_patterns = ['__', 'import', 'exec', 'eval', 'compile', 'open', 'file',
-                         'input', 'raw_input', 'globals', 'locals', 'vars', 'dir',
-                         'getattr', 'setattr', 'delattr', 'hasattr']
-    expr_lower = expr.lower()
-    if any(pattern in expr_lower for pattern in dangerous_patterns):
+from nanochat.coding_tools import (
+    execute_read_file,
+    execute_write_file,
+    execute_edit_file,
+    execute_grep_search,
+    execute_list_files,
+)
+
+# ponytail: registry is a plain dict, add new tools by adding entries
+TOOL_REGISTRY = {
+    "python": execute_python,
+    "bash": execute_bash,
+    "web_search": execute_web_search,
+    "read_file": execute_read_file,
+    "write_file": execute_write_file,
+    "edit_file": execute_edit_file,
+    "grep_search": execute_grep_search,
+    "list_files": execute_list_files,
+}
+
+def dispatch_tool_call(tool_call_json):
+    """Parse a JSON tool call and dispatch to the appropriate tool. Returns result string or None."""
+    try:
+        call = json.loads(tool_call_json)
+    except (json.JSONDecodeError, TypeError):
         return None
-
-    # Only allow .count() method for now (can expand later)
-    if '.count(' not in expr:
+    name = call.get("name")
+    if name not in TOOL_REGISTRY:
         return None
-
-    # Evaluate with timeout
-    return eval_with_timeout(expr)
+    return TOOL_REGISTRY[name](call)
 
 # -----------------------------------------------------------------------------
 class KVCache:
@@ -157,13 +245,20 @@ def sample_next_token(logits, rng, temperature=1.0, top_k=None):
 
 # -----------------------------------------------------------------------------
 
+from nanochat.structured import JSONConstraint, extract_and_validate_json
+
 class RowState:
     # Per-row state tracking during generation
-    def __init__(self, current_tokens=None):
+    def __init__(self, current_tokens=None, json_constraint=None, max_tool_calls=5):
         self.current_tokens = current_tokens or [] # Current token sequence for this row
         self.forced_tokens = deque() # Queue of tokens to force inject
-        self.in_python_block = False # Whether we are inside a python block
-        self.python_expr_tokens = [] # Tokens of the current python expression
+        self.in_tool_call = False # Whether we are inside a tool call block
+        self.tool_call_tokens = [] # Tokens of the current tool call payload
+        self.tool_call_count = 0 # Number of tool executions in this turn
+        self.max_tool_calls = max_tool_calls # Max allowed tool calls before forced stop
+        self.tool_call_history = [] # History of (payload, result) for cycle detection
+        self.tools_disabled = False # Disabled if max calls or cycle detected
+        self.json_constraint = json_constraint # Optional JSONConstraint state tracker
         self.completed = False # Whether this row has completed generation
 
 class Engine:
@@ -173,7 +268,8 @@ class Engine:
         self.tokenizer = tokenizer # needed for tool use
 
     @torch.inference_mode()
-    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42):
+    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42,
+                 max_tool_calls=5, response_format=None, response_schema=None):
         """Same as generate, but does single prefill and then clones the KV cache."""
         assert isinstance(tokens, list) and isinstance(tokens[0], int), "expecting list of ints"
         device = self.model.get_device()
@@ -182,12 +278,15 @@ class Engine:
         rng = torch.Generator(device=device)
         rng.manual_seed(seed)
 
+        # JSON mode setup
+        is_json_mode = (response_format == {"type": "json_object"} or response_format == "json_object" or response_schema is not None)
+
         # Get the special tokens we need to coordinate the tool use state machine
         get_special = lambda s: self.tokenizer.encode_special(s)
-        python_start = get_special("<|python_start|>")
-        python_end = get_special("<|python_end|>")
-        output_start = get_special("<|output_start|>")
-        output_end = get_special("<|output_end|>")
+        tool_call_tok = get_special("<|tool_call|>")
+        tool_call_end_tok = get_special("<|tool_call_end|>")
+        tool_result_tok = get_special("<|tool_result|>")
+        tool_result_end_tok = get_special("<|tool_result_end|>")
         assistant_end = get_special("<|assistant_end|>") # if sampled, ends row
         bos = self.tokenizer.get_bos_token_id() # if sampled, ends row
 
@@ -217,8 +316,15 @@ class Engine:
         kv_cache_decode.prefill(kv_cache_prefill)
         del kv_cache_prefill # no need to keep this memory around
 
-        # 3) Initialize states for each sample
-        row_states = [RowState(tokens.copy()) for _ in range(num_samples)]
+        # 3) Initialize states for each sample with anti-loop protection
+        row_states = [
+            RowState(
+                tokens.copy(),
+                json_constraint=JSONConstraint(schema=response_schema) if is_json_mode else None,
+                max_tool_calls=max_tool_calls,
+            )
+            for _ in range(num_samples)
+        ]
 
         # 4) Main generation loop
         num_generated = 0
@@ -245,26 +351,55 @@ class Engine:
                 token_column.append(next_token)
                 # Update the state of this row to include the next token
                 state.current_tokens.append(next_token)
+
+                # Decode token to update JSON constraint tracker if active
+                if state.json_constraint is not None and not state.in_tool_call:
+                    token_str = self.tokenizer.decode([next_token])
+                    state.json_constraint.update(token_str)
+                    if state.json_constraint.is_completed:
+                        state.completed = True
+
                 # On <|assistant_end|> or <|bos|>, mark the row as completed
                 if next_token == assistant_end or next_token == bos:
                     state.completed = True
-                # Handle tool logic
-                if next_token == python_start:
-                    state.in_python_block = True
-                    state.python_expr_tokens = []
-                elif next_token == python_end and state.in_python_block:
-                    state.in_python_block = False
-                    if state.python_expr_tokens:
-                        expr = self.tokenizer.decode(state.python_expr_tokens)
-                        result = use_calculator(expr)
-                        if result is not None:
-                            result_tokens = self.tokenizer.encode(str(result))
-                            state.forced_tokens.append(output_start)
-                            state.forced_tokens.extend(result_tokens)
-                            state.forced_tokens.append(output_end)
-                    state.python_expr_tokens = []
-                elif state.in_python_block:
-                    state.python_expr_tokens.append(next_token)
+                # Handle tool call logic with anti-loop protections
+                if next_token == tool_call_tok:
+                    state.in_tool_call = True
+                    state.tool_call_tokens = []
+                elif next_token == tool_call_end_tok and state.in_tool_call:
+                    state.in_tool_call = False
+                    if state.tool_call_tokens:
+                        payload = self.tokenizer.decode(state.tool_call_tokens).strip()
+                        state.tool_call_count += 1
+
+                        # Safeguard 1: Tool loop limit exceeded
+                        if state.tool_call_count > state.max_tool_calls or state.tools_disabled:
+                            state.tools_disabled = True
+                            result = f"[error] Maximum tool iteration limit ({state.max_tool_calls}) reached. Please provide your final answer now without calling any more tools."
+
+                        # Safeguard 2: Cycle / Repeated failing call detection
+                        elif (
+                            len(state.tool_call_history) >= 1
+                            and payload == state.tool_call_history[-1][0]
+                            and state.tool_call_history[-1][1].startswith("[error]")
+                        ):
+                            state.tools_disabled = True
+                            result = "[error] Repeated identical failing tool call detected. Tool loop aborted to prevent infinite execution. Provide your best answer now."
+
+                        # Normal dispatch
+                        else:
+                            result = dispatch_tool_call(payload)
+                            if result is None:
+                                result = "[error] tool call failed or returned no result"
+                            state.tool_call_history.append((payload, result))
+
+                        result_tokens = self.tokenizer.encode(result)
+                        state.forced_tokens.append(tool_result_tok)
+                        state.forced_tokens.extend(result_tokens)
+                        state.forced_tokens.append(tool_result_end_tok)
+                    state.tool_call_tokens = []
+                elif state.in_tool_call:
+                    state.tool_call_tokens.append(next_token)
 
             # Yield the token column
             yield token_column, token_masks
@@ -297,6 +432,44 @@ class Engine:
             if all(completed):
                 break
         return results, masks
+
+    def run_agent_turn(self, tokens, max_tool_calls=5, max_tokens=512, **kwargs):
+        """
+        Run a single autonomous agent turn with anti-loop protection and self-correction.
+        Returns a dict: {"output_tokens": list[int], "response_text": str}
+        """
+        prefix_len = len(tokens)
+        results, _ = self.generate_batch(
+            tokens,
+            num_samples=1,
+            max_tokens=max_tokens,
+            max_tool_calls=max_tool_calls,
+            **kwargs,
+        )
+        gen_tokens = results[0][prefix_len:]
+        decoded = self.tokenizer.decode(gen_tokens)
+        return {
+            "output_tokens": gen_tokens,
+            "response_text": decoded,
+        }
+
+    def generate_json(self, tokens, schema=None, **kwargs):
+        """
+        Generate structured JSON output validated against an optional JSON schema.
+        Returns: (parsed_json: Optional[Any], is_valid: bool, error: Optional[str])
+        """
+        prefix_len = len(tokens)
+        results, _ = self.generate_batch(
+            tokens,
+            num_samples=1,
+            response_format={"type": "json_object"},
+            response_schema=schema,
+            **kwargs,
+        )
+        gen_tokens = results[0][prefix_len:]
+        decoded_text = self.tokenizer.decode(gen_tokens)
+        return extract_and_validate_json(decoded_text, schema=schema)
+
 
 
 if __name__ == "__main__":

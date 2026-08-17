@@ -6,6 +6,7 @@ python -m pytest tests/test_execution.py -v
 """
 
 import os
+import sys
 import time
 import pytest
 from nanochat.execution import execute_code
@@ -31,6 +32,7 @@ def test_timeout_kills_infinite_loop():
     assert elapsed < 5, f"process was not killed promptly ({elapsed:.1f}s)"
 
 
+@pytest.mark.skipif(sys.platform in ("darwin", "win32"), reason="resource limits not supported on Darwin or Windows")
 def test_memory_limit():
     # 1GB allocation against the 256MB default limit
     result = execute_code("x = bytearray(1024 * 1024 * 1024)")

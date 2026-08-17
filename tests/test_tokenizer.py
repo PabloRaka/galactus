@@ -93,25 +93,43 @@ def test_render_conversation_system_message_merged(tokenizer):
 
 
 def test_render_conversation_tool_parts(tokenizer):
-    # python tool calls are supervised, python outputs (come from the interpreter) are not
+    # tool calls are supervised, tool results (come from tool execution) are not
     conversation = {"messages": [
         {"role": "user", "content": "add"},
         {"role": "assistant", "content": [
             {"type": "text", "text": "sure"},
-            {"type": "python", "text": "1+1"},
-            {"type": "python_output", "text": "2"},
+            {"type": "tool_call", "text": '{"name": "python", "code": "1+1"}'},
+            {"type": "tool_result", "text": "2"},
             {"type": "text", "text": "it is 2"},
         ]},
     ]}
     ids, mask = tokenizer.render_conversation(conversation)
-    python_start = tokenizer.encode_special("<|python_start|>")
-    output_start = tokenizer.encode_special("<|output_start|>")
-    output_end = tokenizer.encode_special("<|output_end|>")
+    tool_call = tokenizer.encode_special("<|tool_call|>")
+    tool_result = tokenizer.encode_special("<|tool_result|>")
+    tool_result_end = tokenizer.encode_special("<|tool_result_end|>")
     # the tool call and its delimiters are supervised
-    assert mask[ids.index(python_start)] == 1
-    # the interpreter output and its delimiters are not
-    start, end = ids.index(output_start), ids.index(output_end)
+    assert mask[ids.index(tool_call)] == 1
+    # the tool result and its delimiters are not
+    start, end = ids.index(tool_result), ids.index(tool_result_end)
     assert all(m == 0 for m in mask[start:end + 1])
+
+
+def test_render_conversation_thought_parts(tokenizer):
+    # thought parts and their delimiters are supervised during CoT SFT
+    conversation = {"messages": [
+        {"role": "user", "content": "Why is sky blue?"},
+        {"role": "assistant", "content": [
+            {"type": "thought", "text": "Rayleigh scattering causes shorter blue wavelengths to scatter."},
+            {"type": "text", "text": "The sky is blue because of Rayleigh scattering."},
+        ]},
+    ]}
+    ids, mask = tokenizer.render_conversation(conversation)
+    thought_start = tokenizer.encode_special("<|thought|>")
+    thought_end = tokenizer.encode_special("<|thought_end|>")
+    # both the delimiters and the thought tokens must be supervised (mask == 1)
+    t_start = ids.index(thought_start)
+    t_end = ids.index(thought_end)
+    assert all(m == 1 for m in mask[t_start:t_end + 1])
 
 
 def test_render_conversation_truncation(tokenizer):
@@ -134,3 +152,24 @@ def test_render_for_completion(tokenizer):
     # the assistant response itself must not be present
     stripped = tokenizer.encode("this gets stripped")
     assert not any(ids[i:i + len(stripped)] == stripped for i in range(len(ids)))
+
+
+def test_safe_chunking_long_non_whitespace(tokenizer):
+    from nanochat.tokenizer import _safe_chunk_text, MAX_NO_WHITESPACE_CHARS
+
+    # Test short string -> no chunking
+    short_str = "hello world"
+    assert _safe_chunk_text(short_str) == [short_str]
+
+    # Test giant 75,000 char non-whitespace string (like giant base64 or minified code)
+    giant_str = "a" * 75_000
+    chunks = _safe_chunk_text(giant_str)
+    assert len(chunks) == 3
+    assert all(len(c) <= MAX_NO_WHITESPACE_CHARS for c in chunks)
+    assert "".join(chunks) == giant_str
+
+    # Test encode-decode roundtrip on giant non-whitespace string
+    encoded = tokenizer.encode(giant_str)
+    decoded = tokenizer.decode(encoded)
+    assert decoded == giant_str
+

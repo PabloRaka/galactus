@@ -15,6 +15,7 @@ Notice that GSM8K uses tool calls inside << >> tags.
 """
 
 import re
+import json
 from tasks.common import Task, load_hub_dataset
 
 
@@ -66,10 +67,10 @@ class GSM8K(Task):
                     expr, result = inner.rsplit('=', 1)
                 else:
                     expr, result = inner, ""
-                # Add the tool call as a part
-                assistant_message_parts.append({"type": "python", "text": expr})
-                # Add the result as a part
-                assistant_message_parts.append({"type": "python_output", "text": result})
+                # Add the tool call as a JSON payload
+                assistant_message_parts.append({"type": "tool_call", "text": json.dumps({"name": "python", "code": expr})})
+                # Add the result
+                assistant_message_parts.append({"type": "tool_result", "text": result})
             else:
                 # Regular text in between tool calls
                 assistant_message_parts.append({"type": "text", "text": part})
@@ -89,9 +90,6 @@ class GSM8K(Task):
         Note that:
         - the conversation has both user AND assistant message (containing the ground truth answer)
         - the assistant_response is usually the alternative assistant message achieved via sampling
-
-        TODO: Technically, assistant_response should be a Message (either a string or a list of parts)
-              We can handle this later possibly. For now just assume string.
         """
         assert isinstance(assistant_response, str), "Assuming simple string response for now"
         # First extract the ground truth answer
@@ -99,18 +97,38 @@ class GSM8K(Task):
         assert assistant_message['role'] == "assistant", "Last message must be from the Assistant"
         assert isinstance(assistant_message['content'], list), "This is expected to be a list of parts"
         last_text_part = assistant_message['content'][-1]['text'] # this contains the final answer in GSM8K
-        # Extract both the ground truth answer and the predicted answer
         ref_num = extract_answer(last_text_part)
-        pred_num = extract_answer(assistant_response)
-        # Compare and return the success as int
+
+        # Extract predicted answer (prefer answer outside thought block if present)
+        response_text = assistant_response
+        for thought_end_tag in ["<|thought_end|>", "</think>"]:
+            if thought_end_tag in response_text:
+                post_thought = response_text.split(thought_end_tag, 1)[-1]
+                extracted = extract_answer(post_thought)
+                if extracted is not None:
+                    return int(extracted == ref_num)
+
+        pred_num = extract_answer(response_text)
         is_correct = int(pred_num == ref_num)
         return is_correct
 
     def reward(self, conversation, assistant_response):
         """
-        Used during RL. To keep things simple, just re-use the evaluation above.
-        Later this could be made more complex (e.g. format matching etc.)
+        DeepSeek-R1 style reward combining:
+        1. Accuracy reward (1.0 for correct answer, 0.0 for wrong)
+        2. Format reward (+0.2 bonus for properly delimited reasoning tags <|thought|>...<|thought_end|>)
         """
-        is_correct = self.evaluate(conversation, assistant_response)
-        is_correct_float = float(is_correct)
-        return is_correct_float
+        acc_reward = float(self.evaluate(conversation, assistant_response))
+
+        # Format reward: check if reasoning was structured properly
+        format_reward = 0.0
+        has_thought_tags = (
+            ("<|thought|>" in assistant_response and "<|thought_end|>" in assistant_response) or
+            ("<think>" in assistant_response and "</think>" in assistant_response)
+        )
+        if has_thought_tags:
+            # Bonus for valid reasoning structure
+            format_reward = 0.2
+
+        total_reward = acc_reward + format_reward
+        return total_reward

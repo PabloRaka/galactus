@@ -55,14 +55,16 @@ class ByteTokenizer:
     def __init__(self):
         # Special tokens start at 256
         self._special_tokens = {
-            "<|python_start|>": 256,
-            "<|python_end|>": 257,
-            "<|output_start|>": 258,
-            "<|output_end|>": 259,
-            "<|assistant_end|>": 260,
-            "<|bos|>": 261,
+            "<|thought|>": 256,
+            "<|thought_end|>": 257,
+            "<|tool_call|>": 258,
+            "<|tool_call_end|>": 259,
+            "<|tool_result|>": 260,
+            "<|tool_result_end|>": 261,
+            "<|assistant_end|>": 262,
+            "<|bos|>": 263,
         }
-        self._bos = 261
+        self._bos = 263
 
     def encode_special(self, s):
         return self._special_tokens[s]

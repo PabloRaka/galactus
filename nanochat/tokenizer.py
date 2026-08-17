@@ -14,16 +14,18 @@ SPECIAL_TOKENS = [
     "<|user_end|>",
     "<|assistant_start|>", # assistant messages
     "<|assistant_end|>",
-    "<|python_start|>", # assistant invokes python REPL tool
-    "<|python_end|>",
-    "<|output_start|>", # python REPL outputs back to assistant
-    "<|output_end|>",
+    "<|thought|>",        # assistant reasoning / thinking block start (CoT)
+    "<|thought_end|>",    # assistant reasoning / thinking block end
+    "<|tool_call|>",      # assistant invokes a tool (JSON payload inside)
+    "<|tool_call_end|>",
+    "<|tool_result|>",    # tool execution result returned to assistant
+    "<|tool_result_end|>",
 ]
 
-# NOTE: this split pattern deviates from GPT-4 in that we use \p{N}{1,2} instead of \p{N}{1,3}
-# I did this because I didn't want to "waste" too many tokens on numbers for smaller vocab sizes.
-# I verified that 2 is the sweet spot for vocab size of 32K. 1 is a bit worse, 3 was worse still.
-SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,2}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
+# Tokenizer regex split pattern:
+# Enhanced for 96K+ vocab size with Han character isolation, 1-3 digit numeric chunking,
+# TitleCase/lowercase Unicode letter matching, and whitespace/punctuation grouping.
+SPLIT_PATTERN = r"""[\p{Han}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"""
 
 # -----------------------------------------------------------------------------
 # Tokenizer based on rustbpe + tiktoken combo
@@ -31,12 +33,48 @@ import pickle
 import rustbpe
 import tiktoken
 
+from typing import List
+
+# Constants for robust long-context tokenization without PyO3 Panic or ReDoS (Kimi k3 / OpenAI safety guardrails)
+TIKTOKEN_MAX_ENCODE_CHARS = 400_000
+MAX_NO_WHITESPACE_CHARS = 25_000
+
+
+def _safe_chunk_text(text: str) -> List[str]:
+    """
+    Split text into bounded chunks to prevent PyO3 Panic (>400k chars)
+    and ReDoS catastrophic backtracking (>25k consecutive non-whitespace chars).
+    """
+    if len(text) <= MAX_NO_WHITESPACE_CHARS:
+        return [text]
+
+    chunks = []
+    for i in range(0, len(text), TIKTOKEN_MAX_ENCODE_CHARS):
+        block = text[i : i + TIKTOKEN_MAX_ENCODE_CHARS]
+        if len(block) > MAX_NO_WHITESPACE_CHARS:
+            pos = 0
+            while pos < len(block):
+                chunks.append(block[pos : pos + MAX_NO_WHITESPACE_CHARS])
+                pos += MAX_NO_WHITESPACE_CHARS
+        else:
+            chunks.append(block)
+    return chunks
+
+
 class RustBPETokenizer:
     """Light wrapper around tiktoken (for efficient inference) but train with rustbpe"""
 
     def __init__(self, enc, bos_token):
         self.enc = enc
         self.bos_token_id = self.encode_special(bos_token)
+
+    def _encode_single_str(self, s: str) -> List[int]:
+        if len(s) > MAX_NO_WHITESPACE_CHARS:
+            out = []
+            for chunk in _safe_chunk_text(s):
+                out.extend(self.enc.encode_ordinary(chunk))
+            return out
+        return self.enc.encode_ordinary(s)
 
     @classmethod
     def train_from_iterator(cls, text_iterator, vocab_size):
@@ -102,13 +140,16 @@ class RustBPETokenizer:
             append_id = append if isinstance(append, int) else self.encode_special(append)
 
         if isinstance(text, str):
-            ids = self.enc.encode_ordinary(text)
+            ids = self._encode_single_str(text)
             if prepend is not None:
                 ids.insert(0, prepend_id) # TODO: slightly inefficient here? :( hmm
             if append is not None:
                 ids.append(append_id)
         elif isinstance(text, list):
-            ids = self.enc.encode_ordinary_batch(text, num_threads=num_threads)
+            if any(len(s) > MAX_NO_WHITESPACE_CHARS for s in text):
+                ids = [self._encode_single_str(s) for s in text]
+            else:
+                ids = self.enc.encode_ordinary_batch(text, num_threads=num_threads)
             if prepend is not None:
                 for ids_row in ids:
                     ids_row.insert(0, prepend_id) # TODO: same
@@ -169,8 +210,9 @@ class RustBPETokenizer:
         bos = self.get_bos_token_id()
         user_start, user_end = self.encode_special("<|user_start|>"), self.encode_special("<|user_end|>")
         assistant_start, assistant_end = self.encode_special("<|assistant_start|>"), self.encode_special("<|assistant_end|>")
-        python_start, python_end = self.encode_special("<|python_start|>"), self.encode_special("<|python_end|>")
-        output_start, output_end = self.encode_special("<|output_start|>"), self.encode_special("<|output_end|>")
+        thought_start, thought_end = self.encode_special("<|thought|>"), self.encode_special("<|thought_end|>")
+        tool_call, tool_call_end = self.encode_special("<|tool_call|>"), self.encode_special("<|tool_call_end|>")
+        tool_result, tool_result_end = self.encode_special("<|tool_result|>"), self.encode_special("<|tool_result_end|>")
 
         # now we can tokenize the conversation
         add_tokens(bos, 0)
@@ -201,17 +243,23 @@ class RustBPETokenizer:
                         if part["type"] == "text":
                             # string part => simply add the tokens
                             add_tokens(value_ids, 1)
-                        elif part["type"] == "python":
-                            # python tool call => add the tokens inside <|python_start|> and <|python_end|>
-                            add_tokens(python_start, 1)
+                        elif part["type"] == "thought":
+                            # thought / reasoning block => add inside <|thought|> and <|thought_end|>
+                            # these tokens are supervised during CoT SFT
+                            add_tokens(thought_start, 1)
                             add_tokens(value_ids, 1)
-                            add_tokens(python_end, 1)
-                        elif part["type"] == "python_output":
-                            # python output => add the tokens inside <|output_start|> and <|output_end|>
-                            # none of these tokens are supervised because the tokens come from Python at test time
-                            add_tokens(output_start, 0)
+                            add_tokens(thought_end, 1)
+                        elif part["type"] == "tool_call":
+                            # tool call => JSON payload inside <|tool_call|> and <|tool_call_end|>
+                            add_tokens(tool_call, 1)
+                            add_tokens(value_ids, 1)
+                            add_tokens(tool_call_end, 1)
+                        elif part["type"] == "tool_result":
+                            # tool result => add inside <|tool_result|> and <|tool_result_end|>
+                            # none of these tokens are supervised because they come from tool execution at test time
+                            add_tokens(tool_result, 0)
                             add_tokens(value_ids, 0)
-                            add_tokens(output_end, 0)
+                            add_tokens(tool_result_end, 0)
                         else:
                             raise ValueError(f"Unknown part type: {part['type']}")
                 else:

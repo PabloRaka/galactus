@@ -21,6 +21,7 @@ Overall this sandbox is good for evaluation of generated code and protects again
 accidental destructive behavior, but it is not safe against malicious adversarial code.
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -47,8 +48,8 @@ class ExecutionResult:
 GUARD = r"""
 import faulthandler, builtins, os, shutil, subprocess, sys
 maximum_memory_bytes = {maximum_memory_bytes}
-if maximum_memory_bytes is not None and sys.platform != "darwin":
-    # (the resource limit calls seem to fail on macOS, skip them there)
+if maximum_memory_bytes is not None and sys.platform not in ("darwin", "win32"):
+    # (the resource limit calls fail on macOS and Windows)
     import resource
     resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
     resource.setrlimit(resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes))
@@ -98,12 +99,19 @@ def execute_code(
     guard = GUARD.format(maximum_memory_bytes=maximum_memory_bytes)
     program = guard + f"\nexec(compile({code!r}, '<llm>', 'exec'), {{'__name__': '__main__'}})\n"
 
+    # Set up safe environment for execution
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    if sys.platform == "win32":
+        for k in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT", "PYTHONPATH", "USERPROFILE"):
+            if k in os.environ:
+                env[k] = os.environ[k]
+
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
             process = subprocess.run(
                 [sys.executable, "-c", program],
                 cwd=tmpdir, # writes land in the tempdir, deleted afterwards
-                env={"PATH": "/usr/bin:/bin"}, # scrub the environment
+                env=env, # scrubbed environment with OS essentials
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,

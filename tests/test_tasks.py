@@ -86,3 +86,83 @@ def test_render_mc_letter_binding():
     # the letter must directly follow '=' with no whitespace, so that the
     # prompt token for "A" matches the assistant's bare "A" response token
     assert "=A\n" in query and "=B\n" in query
+
+
+def test_parse_glaive_chat():
+    from tasks.glaive_tool_calling import _parse_glaive_chat
+    system_text = "SYSTEM: You have access to get_weather tool."
+    chat_text = """USER: What is the weather in Tokyo?
+ASSISTANT: <functioncall> {"name": "get_weather", "arguments": "{\\"city\\": \\"Tokyo\\"}"} <|endoftext|>
+FUNCTION RESPONSE: {"temperature": "20C", "condition": "Sunny"}
+ASSISTANT: The weather in Tokyo is Sunny and 20C. <|endoftext|>"""
+
+    messages = _parse_glaive_chat(system_text, chat_text)
+    assert messages[0]["role"] == "system"
+    assert "get_weather" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert messages[1]["content"] == "What is the weather in Tokyo?"
+    assert messages[2]["role"] == "assistant"
+    # assistant message content is a list of parts with tool_call, tool_result, text
+    parts = messages[2]["content"]
+    assert any(p["type"] == "tool_call" and "Tokyo" in p["text"] for p in parts)
+    assert any(p["type"] == "tool_result" and "20C" in p["text"] for p in parts)
+    assert any(p["type"] == "text" and "Sunny" in p["text"] for p in parts)
+
+
+def test_parse_thought_content():
+    from tasks.deep_reasoning import parse_thought_content
+    # Test standard <think>...</think> block
+    sample = "<think>\nLet's analyze this step by step.\n1. x = 2\n2. y = 3\n</think>\nThe answer is 5."
+    parts = parse_thought_content(sample)
+    assert len(parts) == 2
+    assert parts[0]["type"] == "thought"
+    assert "step by step" in parts[0]["text"]
+    assert parts[1]["type"] == "text"
+    assert "The answer is 5." in parts[1]["text"]
+
+    # Test plain text without thinking
+    plain = "Direct answer without thinking."
+    parts_plain = parse_thought_content(plain)
+    assert len(parts_plain) == 1
+    assert parts_plain[0]["type"] == "text"
+    assert parts_plain[0]["text"] == plain
+
+
+def test_alpaca_indonesian_example_formatting(monkeypatch):
+    from tasks.alpaca_indonesian import AlpacaGPT4Indonesian
+    import pyarrow as pa
+
+    mock_table = pa.Table.from_pydict({
+        "instruction": [
+            "Jelaskan apa itu gravitasi.",
+            "Terjemahkan kalimat ini ke bahasa Inggris.",
+        ],
+        "input": [
+            "",
+            "Saya sedang belajar kecerdasan buatan.",
+        ],
+        "output": [
+            "Gravitasi adalah gaya tarik-menarik antara benda bermassa.",
+            "I am learning artificial intelligence.",
+        ]
+    })
+    mock_ds = HubDataset(mock_table)
+    monkeypatch.setattr("tasks.alpaca_indonesian.load_hub_dataset", lambda *args, **kwargs: mock_ds)
+
+    task_train = AlpacaGPT4Indonesian(split="train", test_ratio=0.5)
+    assert task_train.num_examples() == 1
+    ex_train = task_train.get_example(0)
+    assert len(ex_train["messages"]) == 2
+    assert ex_train["messages"][0]["role"] == "user"
+    assert ex_train["messages"][1]["role"] == "assistant"
+
+    task_test = AlpacaGPT4Indonesian(split="test", test_ratio=0.5)
+    assert task_test.num_examples() == 1
+    ex_test = task_test.get_example(0)
+    assert len(ex_test["messages"]) == 2
+    assert ex_test["messages"][0]["role"] == "user"
+    assert ex_test["messages"][1]["role"] == "assistant"
+
+    all_outputs = [ex_train["messages"][1]["content"], ex_test["messages"][1]["content"]]
+    assert any("gaya tarik-menarik" in out for out in all_outputs)
+    assert any("artificial intelligence" in out for out in all_outputs)

@@ -20,65 +20,123 @@ import torch
 import pyarrow.parquet as pq
 
 from nanochat.common import get_dist_info
-from nanochat.dataset import list_parquet_files
+from nanochat.dataset import list_parquet_files, PRETRAIN_SOURCES, DATA_DIR
 
-def _document_batches(split, resume_state_dict, tokenizer_batch_size):
+
+def _document_batches(split, resume_state_dict, tokenizer_batch_size, domain_weights=None):
     """
     Infinite iterator over document batches (list of text strings) from parquet files.
 
-    Handles DDP sharding and approximate resume. Each yield is (text_batch, (pq_idx, rg_idx, epoch))
-    where text_batch is a list of document strings, indices track position for resumption,
-    and epoch counts how many times we've cycled through the dataset (starts at 1).
+    Supports both single-source with exact resume and multi-source weighted domain mixing.
+    Handles DDP sharding. Each yield is (text_batch, (pq_idx, rg_idx, epoch)).
     """
+    import random
+
     ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
 
-    warn_on_legacy = ddp_rank == 0 and split == "train" # rank 0 on train split will warn on legacy
-    parquet_paths = list_parquet_files(warn_on_legacy=warn_on_legacy)
-    assert len(parquet_paths) != 0, "No dataset parquet files found, did you run dataset.py?"
-    parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
+    if domain_weights is None:
+        # Standard single-source (ClimbMix) mode with exact resume support
+        warn_on_legacy = ddp_rank == 0 and split == "train"
+        parquet_paths = list_parquet_files(warn_on_legacy=warn_on_legacy)
+        assert len(parquet_paths) != 0, "No dataset parquet files found, did you run dataset.py?"
+        parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
 
-    resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
-    resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None
-    resume_epoch = resume_state_dict.get("epoch", 1) if resume_state_dict is not None else 1
-    first_pass = True
-    pq_idx = resume_pq_idx
-    epoch = resume_epoch
+        resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
+        resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None
+        resume_epoch = resume_state_dict.get("epoch", 1) if resume_state_dict is not None else 1
+        first_pass = True
+        pq_idx = resume_pq_idx
+        epoch = resume_epoch
 
-    while True:  # iterate infinitely (multi-epoch)
-        pq_idx = resume_pq_idx if first_pass else 0
-        while pq_idx < len(parquet_paths):
-            filepath = parquet_paths[pq_idx]
-            pf = pq.ParquetFile(filepath)
-            # Start from resume point if resuming on same file, otherwise from DDP rank
-            if first_pass and (resume_rg_idx is not None) and (pq_idx == resume_pq_idx):
-                base_idx = resume_rg_idx // ddp_world_size
-                base_idx += 1  # advance by 1 so we don't repeat data after resuming
-                rg_idx = base_idx * ddp_world_size + ddp_rank
-                if rg_idx >= pf.num_row_groups:
-                    pq_idx += 1
-                    continue
-                resume_rg_idx = None  # only do this once
-            else:
-                rg_idx = ddp_rank
-            while rg_idx < pf.num_row_groups:
-                rg = pf.read_row_group(rg_idx)
-                batch = rg.column('text').to_pylist()
-                for i in range(0, len(batch), tokenizer_batch_size):
-                    yield batch[i:i+tokenizer_batch_size], (pq_idx, rg_idx, epoch)
-                rg_idx += ddp_world_size
-            pq_idx += 1
-        first_pass = False
-        epoch += 1
+        while True:  # iterate infinitely (multi-epoch)
+            pq_idx = resume_pq_idx if first_pass else 0
+            while pq_idx < len(parquet_paths):
+                filepath = parquet_paths[pq_idx]
+                pf = pq.ParquetFile(filepath)
+                # Start from resume point if resuming on same file, otherwise from DDP rank
+                if first_pass and (resume_rg_idx is not None) and (pq_idx == resume_pq_idx):
+                    base_idx = resume_rg_idx // ddp_world_size
+                    base_idx += 1  # advance by 1 so we don't repeat data after resuming
+                    rg_idx = base_idx * ddp_world_size + ddp_rank
+                    if rg_idx >= pf.num_row_groups:
+                        pq_idx += 1
+                        continue
+                    resume_rg_idx = None  # only do this once
+                else:
+                    rg_idx = ddp_rank
+                while rg_idx < pf.num_row_groups:
+                    rg = pf.read_row_group(rg_idx)
+                    col_name = "text" if "text" in rg.column_names else rg.column_names[0]
+                    batch = rg.column(col_name).to_pylist()
+                    batch = [str(x) for x in batch if x]
+                    for i in range(0, len(batch), tokenizer_batch_size):
+                        yield batch[i:i+tokenizer_batch_size], (pq_idx, rg_idx, epoch)
+                    rg_idx += ddp_world_size
+                pq_idx += 1
+            first_pass = False
+            epoch += 1
+    else:
+        # Multi-source weighted domain mixing mode
+        total_w = sum(domain_weights.values())
+        norm_w = {k: v / total_w for k, v in domain_weights.items() if v > 0}
+
+        active_sources = []
+        active_weights = []
+        for name, weight in norm_w.items():
+            src_dir = PRETRAIN_SOURCES.get(name, {}).get("dir", DATA_DIR)
+            files = list_parquet_files(src_dir)
+            if files:
+                active_sources.append((name, src_dir, files))
+                active_weights.append(weight)
+
+        if not active_sources:
+            files = list_parquet_files(DATA_DIR)
+            assert len(files) != 0, "No dataset parquet files found, did you run dataset.py?"
+            active_sources = [("climbmix", DATA_DIR, files)]
+            active_weights = [1.0]
+
+        sum_w = sum(active_weights)
+        active_weights = [w / sum_w for w in active_weights]
+
+        def single_source_stream(files):
+            active_paths = files[:-1] if (split == "train" and len(files) > 1) else files
+            epoch = 1
+            while True:
+                for pq_idx, filepath in enumerate(active_paths):
+                    pf = pq.ParquetFile(filepath)
+                    target_candidate_cols = ["code", "text", "content", "command", "instruction", "output", "prompt"]
+                    rg_idx = ddp_rank
+                    while rg_idx < pf.num_row_groups:
+                        rg = pf.read_row_group(rg_idx)
+                        col_name = None
+                        for c in target_candidate_cols:
+                            if c in rg.column_names:
+                                col_name = c
+                                break
+                        if col_name is None:
+                            col_name = rg.column_names[0]
+
+                        batch = rg.column(col_name).to_pylist()
+                        batch = [str(x) for x in batch if x]
+                        for i in range(0, len(batch), tokenizer_batch_size):
+                            yield batch[i:i+tokenizer_batch_size], (pq_idx, rg_idx, epoch)
+                        rg_idx += ddp_world_size
+                epoch += 1
+
+        iters = [single_source_stream(files) for _, _, files in active_sources]
+        while True:
+            choice = random.choices(range(len(active_sources)), weights=active_weights, k=1)[0]
+            yield next(iters[choice])
 
 
 def tokenizing_distributed_data_loader_with_state_bos_bestfit(
     tokenizer, B, T, split,
     tokenizer_threads=4, tokenizer_batch_size=128,
     device="cuda", resume_state_dict=None,
-    buffer_size=1000
+    buffer_size=1000, domain_weights=None
 ):
     """
-    BOS-aligned dataloader with Best-Fit Cropping.
+    BOS-aligned dataloader with Best-Fit Cropping and optional multi-source domain weighting.
 
     Reduces token waste compared to simple greedy cropping by searching a buffer
     for documents that fit well, while maintaining 100% utilization (no padding).
@@ -91,12 +149,12 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
     Key properties:
     - Every row starts with BOS
     - 100% utilization (no padding, every token is trained on)
-    - Approximately 35% of all tokens are discarded due to cropping
+    - Multi-source domain proportions supported via domain_weights dict
     """
     assert split in ["train", "val"], "split must be 'train' or 'val'"
 
     row_capacity = T + 1
-    batches = _document_batches(split, resume_state_dict, tokenizer_batch_size)
+    batches = _document_batches(split, resume_state_dict, tokenizer_batch_size, domain_weights=domain_weights)
     bos_token = tokenizer.get_bos_token_id()
     doc_buffer = []
     pq_idx, rg_idx, epoch = 0, 0, 1
