@@ -20,7 +20,10 @@ class AlpacaGPT4Indonesian(Task):
         # The hub dataset only has a train split, so we split deterministically
         full_ds = load_hub_dataset("Ichsan2895/alpaca-gpt4-indonesian", split="train").shuffle(seed=42)
         total_len = len(full_ds)
-        test_size = int(total_len * test_ratio)
+        if total_len > 1:
+            test_size = max(1, int(total_len * test_ratio))
+        else:
+            test_size = 1 if split in ["test", "val"] else 0
         train_size = total_len - test_size
 
         if split in ["test", "val"]:

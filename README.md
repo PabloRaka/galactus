@@ -146,6 +146,16 @@ python -m scripts.chat_cli --tdd
 python -m scripts.chat_cli --hide-thoughts
 ```
 
+### 6. Benchmark Evaluation Suite
+Evaluate Galactus across standard global benchmarks and native Indonesian benchmarks:
+```bash
+# Evaluate Indonesian benchmarks (IndoMMLU + IndoReasoning -> IndoCORE metric)
+python -m scripts.chat_eval -i sft -a "IndoMMLU|IndoReasoning"
+
+# Evaluate full benchmark suite (Global ChatCORE + Indonesian IndoCORE)
+python -m scripts.chat_eval -i sft
+```
+
 ---
 
 ## 🧪 Running Unit Tests

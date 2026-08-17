@@ -21,6 +21,7 @@ from tasks.humaneval import HumanEval
 from tasks.mmlu import MMLU
 from tasks.arc import ARC
 from tasks.gsm8k import GSM8K
+from tasks.indo_eval import IndoMMLU, IndoReasoning, AlpacaIndoEval
 
 # -----------------------------------------------------------------------------
 # Generative evaluation loop (we go one problem at a time, sample, evaluate)
@@ -163,6 +164,9 @@ def run_chat_eval(task_name, model, tokenizer, engine,
         'ARC-Easy': partial(ARC, subset="ARC-Easy", split="test"),
         'ARC-Challenge': partial(ARC, subset="ARC-Challenge", split="test"),
         'GSM8K': partial(GSM8K, subset="main", split="test"),
+        'IndoMMLU': partial(IndoMMLU, subset="all", split="test"),
+        'IndoReasoning': partial(IndoReasoning, split="test"),
+        'AlpacaIndo': partial(AlpacaIndoEval, split="test"),
     }[task_name]
     task_object = task_module()
     # Run the evaluation
@@ -199,15 +203,18 @@ if __name__ == "__main__":
     engine = Engine(model, tokenizer)
 
     # Get the tasks to evaluate on
-    all_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval']
+    default_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'IndoMMLU', 'IndoReasoning']
     baseline_accuracies = {
         'ARC-Easy': 0.25, # multiple choice 1 of 4 => 25%
         'ARC-Challenge': 0.25, # multiple choice 1 of 4 => 25%
         'MMLU': 0.25, # multiple choice 1 of 4 => 25%
         'GSM8K': 0.0, # open-ended => 0%
         'HumanEval': 0.0, # open-ended => 0%
+        'IndoMMLU': 0.25, # multiple choice 1 of 4 => 25%
+        'IndoReasoning': 0.25, # multiple choice 1 of 4 => 25%
+        'AlpacaIndo': 0.0, # open-ended => 0%
     }
-    task_names = all_tasks if args.task_name is None else args.task_name.split('|')
+    task_names = default_tasks if args.task_name is None else args.task_name.split('|')
 
     # Run all the task evaluations sequentially
     results = {}
@@ -225,16 +232,20 @@ if __name__ == "__main__":
         results[task_name] = acc
         print0(f"{task_name} accuracy: {100 * acc:.2f}%")
 
-    # calculate the ChatCORE metric if we can (similar to CORE, it's the mean centered accuracy)
-    # this way, ChatCORE ranges from 0 (at random baseline) to 1 (peak performance)
-    all_tasks_were_evaluated = all(task_name in results for task_name in all_tasks)
-    if all_tasks_were_evaluated:
+    # calculate ChatCORE / IndoCORE metric
+    indo_tasks = ['IndoMMLU', 'IndoReasoning']
+    if all(t in results for t in indo_tasks):
+        indo_mean = sum((results[t] - baseline_accuracies[t]) / (1.0 - baseline_accuracies[t]) for t in indo_tasks) / len(indo_tasks)
+        print0(f"IndoCORE metric: {indo_mean:.4f}")
+
+    core_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval']
+    if all(task_name in results for task_name in core_tasks):
         centered_mean = 0
-        for task_name, acc in results.items():
+        for task_name in core_tasks:
             baseline_acc = baseline_accuracies.get(task_name, 0.0)
-            centered_acc = (acc - baseline_acc) / (1.0 - baseline_acc)
+            centered_acc = (results[task_name] - baseline_acc) / (1.0 - baseline_acc)
             centered_mean += centered_acc
-        chatcore_metric = centered_mean / len(results)
+        chatcore_metric = centered_mean / len(core_tasks)
         print0(f"ChatCORE metric: {chatcore_metric:.4f}")
 
     compute_cleanup()

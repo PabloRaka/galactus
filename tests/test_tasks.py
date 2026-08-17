@@ -166,3 +166,55 @@ def test_alpaca_indonesian_example_formatting(monkeypatch):
     all_outputs = [ex_train["messages"][1]["content"], ex_test["messages"][1]["content"]]
     assert any("gaya tarik-menarik" in out for out in all_outputs)
     assert any("artificial intelligence" in out for out in all_outputs)
+
+
+def test_indo_mmlu_benchmark():
+    from tasks.indo_eval import IndoMMLU
+    task = IndoMMLU(subset="all", split="test")
+    assert len(task) > 0
+    assert task.eval_type == "categorical"
+
+    ex = task.get_example(0)
+    assert "messages" in ex
+    assert "letters" in ex
+    assert len(ex["messages"]) == 2
+    assert ex["messages"][0]["role"] == "user"
+    assert ex["messages"][1]["role"] == "assistant"
+    assert ex["messages"][1]["content"] in ex["letters"]
+
+    # Test evaluation method
+    correct_ans = ex["messages"][1]["content"]
+    assert task.evaluate(ex, correct_ans) is True
+    wrong_ans = "Z" if "Z" not in ex["letters"] else "X"
+    assert task.evaluate(ex, wrong_ans) is False
+
+
+def test_indo_reasoning_benchmark():
+    from tasks.indo_eval import IndoReasoning
+    task = IndoReasoning(split="test")
+    assert len(task) > 0
+    assert task.eval_type == "categorical"
+
+    ex = task.get_example(0)
+    assert "messages" in ex
+    assert "letters" in ex
+    assert task.evaluate(ex, ex["messages"][1]["content"]) is True
+
+
+def test_alpaca_indo_eval(monkeypatch):
+    from tasks.indo_eval import AlpacaIndoEval
+    import pyarrow as pa
+
+    mock_table = pa.Table.from_pydict({
+        "instruction": ["Sebutkan ibukota Indonesia."],
+        "input": [""],
+        "output": ["Ibukota Indonesia adalah Jakarta (dan IKN Nusantara)."]
+    })
+    monkeypatch.setattr("tasks.alpaca_indonesian.load_hub_dataset", lambda *args, **kwargs: HubDataset(mock_table))
+
+    eval_task = AlpacaIndoEval(split="test")
+    assert len(eval_task) == 1
+    ex = eval_task.get_example(0)
+    assert eval_task.evaluate(ex, "Ibukota Indonesia adalah Jakarta.") is True
+    assert eval_task.evaluate(ex, "") is False
+    assert eval_task.evaluate(ex, "Sebutkan ibukota Indonesia.") is False
