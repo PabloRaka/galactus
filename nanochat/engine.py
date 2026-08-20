@@ -157,14 +157,42 @@ TOOL_REGISTRY = {
 
 def dispatch_tool_call(tool_call_json):
     """Parse a JSON tool call and dispatch to the appropriate tool. Returns result string or None."""
+    call = None
     try:
         call = json.loads(tool_call_json)
     except (json.JSONDecodeError, TypeError):
-        return None
+        try:
+            from nanochat.structured import repair_json
+            call = repair_json(str(tool_call_json))
+        except Exception:
+            return "[error] Invalid JSON payload in tool call"
+
+    if not isinstance(call, dict):
+        return "[error] Tool call payload must be a JSON object"
+
     name = call.get("name")
+    if not name:
+        return "[error] Tool call missing required 'name' field"
+
     if name not in TOOL_REGISTRY:
-        return None
-    return TOOL_REGISTRY[name](call)
+        return f"[error] Unknown tool: '{name}'. Available tools: {list(TOOL_REGISTRY.keys())}"
+
+    # Normalize arguments: support both flat {"name": "...", "path": "..."}
+    # and nested {"name": "...", "arguments": {"path": "..."}}
+    args = call.get("arguments") or call.get("parameters") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {"input": args}
+    if not isinstance(args, dict):
+        args = {"input": args}
+
+    merged_call = {**call, **args}
+    try:
+        return TOOL_REGISTRY[name](merged_call)
+    except Exception as e:
+        return f"[error] Tool '{name}' execution failed: {e}"
 
 # -----------------------------------------------------------------------------
 class KVCache:

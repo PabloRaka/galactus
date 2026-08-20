@@ -42,14 +42,17 @@ def parse_thought_content(text):
     for pat in THINK_PATTERNS:
         match = pat.search(text)
         if match:
+            prefix = clean_answer(text[:match.start()])
             thought_text = match.group(1).strip()
             answer_text = clean_answer(text[match.end():])
             parts = []
+            if prefix:
+                parts.append({"type": "text", "text": prefix})
             if thought_text:
                 parts.append({"type": "thought", "text": thought_text})
             if answer_text:
                 parts.append({"type": "text", "text": answer_text})
-            elif not thought_text:
+            elif not thought_text and not prefix:
                 parts.append({"type": "text", "text": text})
             return parts if parts else [{"type": "text", "text": text}]
 

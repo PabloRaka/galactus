@@ -6,7 +6,14 @@ Trains a tiny throwaway tokenizer in-process so the test is hermetic
 python -m pytest tests/test_tokenizer.py -v
 """
 
-import pytest
+try:
+    import pytest
+    fixture = pytest.fixture(scope="module")
+except ImportError:
+    pytest = None
+    def fixture(fn):
+        return fn
+
 from nanochat.tokenizer import RustBPETokenizer, SPECIAL_TOKENS
 
 # a small corpus is enough to exercise the BPE machinery
@@ -18,7 +25,7 @@ CORPUS = [
 ] * 8
 
 
-@pytest.fixture(scope="module")
+@fixture
 def tokenizer():
     vocab_size = 256 + len(SPECIAL_TOKENS) + 35 # bytes + specials + a few merges
     return RustBPETokenizer.train_from_iterator(iter(CORPUS), vocab_size)
@@ -172,4 +179,20 @@ def test_safe_chunking_long_non_whitespace(tokenizer):
     encoded = tokenizer.encode(giant_str)
     decoded = tokenizer.decode(encoded)
     assert decoded == giant_str
+
+
+def test_indonesian_tokenization_pattern(tokenizer):
+    # Test Indonesian reduplication, clitics, and standard words roundtrip
+    indo_samples = [
+        "Anak-anak sedang bermain di lapangan.",
+        "Berhari-hari mereka belajar bersama-sama.",
+        "Buku'ku ada di rumah'nya, bukan'kah begitu?",
+        "Hati-hati di jalan, semoga selamat sampai tujuan.",
+    ]
+    for text in indo_samples:
+        ids = tokenizer.encode(text)
+        assert len(ids) > 0
+        decoded = tokenizer.decode(ids)
+        assert decoded == text
+
 

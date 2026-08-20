@@ -218,3 +218,38 @@ def test_alpaca_indo_eval(monkeypatch):
     assert eval_task.evaluate(ex, "Ibukota Indonesia adalah Jakarta.") is True
     assert eval_task.evaluate(ex, "") is False
     assert eval_task.evaluate(ex, "Sebutkan ibukota Indonesia.") is False
+
+
+def test_deep_reasoning_task(monkeypatch):
+    from tasks.deep_reasoning import DeepReasoning, parse_thought_content
+    import pyarrow as pa
+
+    # Test thought content parser with multiple tags
+    parsed1 = parse_thought_content("<think>thinking step 1\nstep 2</think> final answer")
+    assert len(parsed1) == 2
+    assert parsed1[0] == {"type": "thought", "text": "thinking step 1\nstep 2"}
+    assert parsed1[1] == {"type": "text", "text": "final answer"}
+
+    parsed_nemotron = parse_thought_content("<|begin_of_thought|>nemotron thought<|end_of_thought|>solution")
+    assert len(parsed_nemotron) == 2
+    assert parsed_nemotron[0]["type"] == "thought"
+    assert parsed_nemotron[1]["type"] == "text"
+
+    # Test mock dataset load and example formatting
+    mock_table = pa.Table.from_pydict({
+        "prompt": ["Solve 2x + 6 = 10"],
+        "response": ["<think>2x = 4 so x = 2</think> The solution is x = 2."],
+    })
+    monkeypatch.setattr("tasks.deep_reasoning.load_hub_dataset", lambda *args, **kwargs: HubDataset(mock_table))
+
+    dr_task = DeepReasoning(split="train")
+    assert len(dr_task) == 1
+    ex = dr_task.get_example(0)
+    assert len(ex["messages"]) == 2
+    assert ex["messages"][0]["role"] == "user"
+    assert ex["messages"][1]["role"] == "assistant"
+    content = ex["messages"][1]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "thought"
+    assert content[1]["type"] == "text"
+

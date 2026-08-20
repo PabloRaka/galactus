@@ -23,9 +23,12 @@ SPECIAL_TOKENS = [
 ]
 
 # Tokenizer regex split pattern:
-# Enhanced for 96K+ vocab size with Han character isolation, 1-3 digit numeric chunking,
-# TitleCase/lowercase Unicode letter matching, and whitespace/punctuation grouping.
-SPLIT_PATTERN = r"""[\p{Han}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"""
+# Optimized for Indonesian + English/Multilingual with Latin script and code.
+# - Indonesian hyphenated reduplication (kata ulang: anak-anak, berhari-hari, dll.)
+# - Indonesian & English clitics/contractions ('kan, 'ku, 'mu, 'nya, 's, 't, 're, 've, 'm, 'll, 'd)
+# - Code: hex/binary/octal literals kept whole (0xFF, 0b1010, 0o777)
+# - 1-3 digit numeric chunking, TitleCase/lowercase matching, punctuation/whitespace grouping
+SPLIT_PATTERN = r"""[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?:-[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+)?(?i:'s|'t|'re|'ve|'m|'ll|'d|'kan|'ku|'mu|'nya)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+(?:-[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+)?(?i:'s|'t|'re|'ve|'m|'ll|'d|'kan|'ku|'mu|'nya)?|0[xXbBoO][\da-fA-F]+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"""
 
 # -----------------------------------------------------------------------------
 # Tokenizer based on rustbpe + tiktoken combo

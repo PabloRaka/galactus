@@ -143,6 +143,10 @@ science_text = r"""
 Photosynthesis is a photochemical energy transduction process in which light-harvesting pigment–protein complexes within the thylakoid membranes of oxygenic phototrophs absorb photons and initiate charge separation at the reaction center, driving the linear electron transport chain from water to NADP⁺ via photosystem II, the cytochrome b₆f complex, and photosystem I, concomitantly generating a trans-thylakoid proton motive force utilized by chloroplastic ATP synthase. The light-dependent reactions produce ATP and NADPH, which fuel the Calvin–Benson–Bassham cycle in the stroma, wherein ribulose-1,5-bisphosphate is carboxylated by ribulose-1,5-bisphosphate carboxylase/oxygenase (RuBisCO) to form 3-phosphoglycerate, subsequently reduced and regenerated through a series of enzymatic steps, enabling net assimilation of CO₂ into triose phosphates and ultimately carbohydrates. This process is tightly regulated by photoprotective mechanisms, redox feedback, and metabolite flux, representing a central biochemical pathway coupling solar energy capture to the biosphere’s primary productivity.
 """.strip()
 
+indonesian_text = r"""
+Presiden Republik Indonesia menegaskan pentingnya percepatan transformasi digital nasional guna memperkuat kemandirian teknologi bangsa. Dalam sidang kabinet paripurna di Istana Negara, beliau menyampaikan bahwa riset kecerdasan buatan, komputasi awan, dan sains data harus dikembangkan secara terpadu oleh generasi muda. Anak-anak bangsa di berbagai universitas dan lembaga penelitian didorong berhari-hari untuk menciptakan inovasi terdepan bersama-sama. Rumah'nya teknologi masa depan terletak pada sinergi antara akademisi, industri teknologi, dan pemerintah. Program beasiswa dan pusat pelatihan kecerdasan artifisial akan terus diperluas ke seluruh pelosok tanah air.
+""".strip()
+
 # The tokenizer was trained on data from earlier shards, so it has seen this data
 train_docs = next(parquets_iter_batched(split="train"))
 train_text = "\n".join(train_docs)
@@ -151,6 +155,7 @@ val_text = "\n".join(val_docs)
 
 all_text = [
     ("news", news_text),
+    ("indonesian", indonesian_text),
     ("korean", korean_text),
     ("code", code_text),
     ("math", math_text),

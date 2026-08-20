@@ -8,7 +8,7 @@ import argparse
 import torch
 from nanochat.tokenizer import RustBPETokenizer
 from nanochat.common import get_base_dir
-from nanochat.dataset import parquets_iter_batched
+from nanochat.dataset import parquets_iter_batched, list_parquet_files, DATA_DIR, INDONESIAN_DATA_DIR
 
 # -----------------------------------------------------------------------------
 # Parse command line arguments
@@ -27,20 +27,25 @@ print(f"vocab_size: {args.vocab_size:,}")
 
 def text_iterator():
     """
-    1) Flatten the batches into a single iterator
+    1) Stream documents from both ClimbMix and Indonesian corpus
     2) Crop every document to args.doc_cap characters
     3) Break when we've seen args.max_chars characters
     """
     nchars = 0
-    for batch in parquets_iter_batched(split="train"):
-        for doc in batch:
-            doc_text = doc
-            if len(doc_text) > args.doc_cap:
-                doc_text = doc_text[:args.doc_cap]
-            nchars += len(doc_text)
-            yield doc_text
-            if nchars > args.max_chars:
-                return
+    sources = [DATA_DIR]
+    if list_parquet_files(INDONESIAN_DATA_DIR):
+        sources.append(INDONESIAN_DATA_DIR)
+
+    for data_dir in sources:
+        for batch in parquets_iter_batched(split="train", data_dir=data_dir):
+            for doc in batch:
+                doc_text = doc
+                if len(doc_text) > args.doc_cap:
+                    doc_text = doc_text[:args.doc_cap]
+                nchars += len(doc_text)
+                yield doc_text
+                if nchars > args.max_chars:
+                    return
 text_iter = text_iterator()
 
 # -----------------------------------------------------------------------------

@@ -75,12 +75,8 @@ parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
-# Dataset Domain Mixture (Multi-Source Hybrid Pretraining)
-parser.add_argument("--web-ratio", type=float, default=0.30, help="ratio of general web & STEM data (ClimbMix) in pretraining stream (default: 0.30)")
-parser.add_argument("--indonesian-ratio", type=float, default=0.10, help="ratio of Indonesian encyclopedic & knowledge text in pretraining stream (default: 0.10)")
-parser.add_argument("--code-ratio", type=float, default=0.30, help="ratio of coding/programming data in pretraining stream (default: 0.30)")
-parser.add_argument("--math-ratio", type=float, default=0.25, help="ratio of math/LaTeX reasoning data in pretraining stream (default: 0.25)")
-parser.add_argument("--terminal-ratio", type=float, default=0.05, help="ratio of Linux/Bash/Zsh/PowerShell terminal commands in pretraining stream (default: 0.05)")
+parser.add_argument("--indonesian-ratio", type=float, default=0.30, help="ratio of Indonesian corpus in pretraining stream (default: 0.10, 0.0 to disable)")
+
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
@@ -326,24 +322,18 @@ if scaler is not None:
     print0("GradScaler enabled for fp16 training")
 
 # -----------------------------------------------------------------------------
-# Initialize the DataLoaders for train/val with domain proportions
-domain_weights = {
-    "climbmix": args.web_ratio,
-    "indonesian": args.indonesian_ratio,
-    "code": args.code_ratio,
-    "math": args.math_ratio,
-    "terminal": args.terminal_ratio,
-}
-print0(f"Pretraining Domain Mixture: {domain_weights}")
+# Initialize the DataLoaders for train/val
+if args.indonesian_ratio > 0:
+    print0(f"Pretraining Language Mixture: ClimbMix ({1.0 - args.indonesian_ratio:.1%}) + Indonesian ({args.indonesian_ratio:.1%})")
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
 train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(
     tokenizer, args.device_batch_size, args.max_seq_len, split="train",
     device=device, resume_state_dict=dataloader_resume_state_dict,
-    domain_weights=domain_weights,
+    indonesian_ratio=args.indonesian_ratio,
 )
 build_val_loader = lambda: tokenizing_distributed_data_loader_bos_bestfit(
     tokenizer, args.device_batch_size, args.max_seq_len, split="val",
-    device=device, domain_weights=domain_weights,
+    device=device, indonesian_ratio=args.indonesian_ratio,
 )
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 
