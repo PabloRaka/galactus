@@ -79,6 +79,7 @@ for flops in "${FLOPS_BUDGETS[@]}"; do
             --depth=$d \
             --target-flops=$flops \
             --target-param-data-ratio=-1 \
+            --indonesian-ratio=0.30 \
             --run="${WANDB_RUN}_${TAG}" \
             --model-tag="${TAG}" \
             --eval-tokens=$EVAL_TOKENS \

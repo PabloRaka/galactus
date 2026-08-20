@@ -17,10 +17,10 @@ if [ -z "$SKIP_SETUP" ]; then
     uv sync --extra gpu
     source .venv/bin/activate
 
-    # Tokenizer, download 1000 shards for pretraining
-    # (probably this can be reduced but it's tricky to determine the exact right number, TODO).
-    python -m nanochat.dataset -n 1000
-    python -m scripts.tok_train --max-chars=2000000000 --vocab-size=32768
+    # Tokenizer, download shards for pretraining
+    python -m nanochat.dataset --source climbmix -n 1000
+    python -m nanochat.dataset --source indonesian -n 2
+    python -m scripts.tok_train --max-chars=2000000000 --vocab-size=98304
 else
     source .venv/bin/activate
 fi
@@ -68,6 +68,7 @@ for d in "${DEPTHS[@]}"; do
 
     torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
         --depth=$d \
+        --indonesian-ratio=0.30 \
         --run="${WANDB_RUN}_d${d}" \
         --model-tag="${TAG}" \
         --core-metric-every=999999 \

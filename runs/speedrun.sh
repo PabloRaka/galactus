@@ -42,19 +42,14 @@ fi
 # -----------------------------------------------------------------------------
 # Tokenizer
 
-# Download the first ~2B characters of pretraining dataset
-# each data shard is ~250M chars
-# so we download 2e9 / 250e6 = 8 data shards at this point
-# each shard is ~100MB of text (compressed), so this is about ~800MB of data on disk
-# look at dev/repackage_data_reference.py for details on how this data was prepared
-python -m nanochat.dataset -n 8
-# Immediately also kick off downloading more shards in the background while tokenizer trains
-# Approximately 150 shards are needed for GPT-2 capability pretraining, add 20 for padding.
-# The maximum total number of shards available in the entire dataset is 6542.
-python -m nanochat.dataset -n 170 &
+# Download initial shards for tokenizer and pretraining
+python -m nanochat.dataset --source climbmix -n 8
+python -m nanochat.dataset --source indonesian -n 2
+# Immediately also kick off downloading more ClimbMix shards in the background while tokenizer trains
+python -m nanochat.dataset --source climbmix -n 170 &
 DATASET_DOWNLOAD_PID=$!
-# train the tokenizer with vocab size 2**15 = 32768 on ~2B characters of data
-python -m scripts.tok_train
+# train the tokenizer with vocab size 98304 on ClimbMix + Indonesian corpus
+python -m scripts.tok_train --vocab-size=98304
 # evaluate the tokenizer (report compression ratio etc.)
 python -m scripts.tok_eval
 
@@ -63,17 +58,32 @@ python -m scripts.tok_eval
 echo "Waiting for dataset download to complete..."
 wait $DATASET_DOWNLOAD_PID
 
-# d24 model (slightly undertrained to beat GPT-2 => decrease data:params ratio from compute optimal 10.5 (default) to 8)
-torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- --depth=24 --target-param-data-ratio=8 --device-batch-size=16 --fp8 --run=$WANDB_RUN
+# d24 model (trained with 70% ClimbMix + 30% Indonesian)
+torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=24 \
+    --target-param-data-ratio=8 \
+    --device-batch-size=16 \
+    --indonesian-ratio=0.30 \
+    --fp8 \
+    --run=$WANDB_RUN
+
 # evaluate the model: CORE metric, BPB on train/val, and draw samples
 torchrun --standalone --nproc_per_node=8 -m scripts.base_eval -- --device-batch-size=16
 
 # -----------------------------------------------------------------------------
-# SFT (teach the model conversation special tokens, tool use, multiple choice)
+# SFT (teach the model conversation special tokens, tool use, multiple choice, reasoning)
 
-# run SFT and eval the model
-torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --run=$WANDB_RUN
+# run SFT across multi-task mixture
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- \
+    --alpaca-id-epochs=1 \
+    --reasoning-epochs=1 \
+    --glaive-epochs=1 \
+    --gsm8k-epochs=4 \
+    --mmlu-epochs=3 \
+    --run=$WANDB_RUN
+
+# evaluate the model across global and Indonesian benchmarks
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i sft
 
 # chat with the model over CLI! Leave out the -p to chat interactively
-# python -m scripts.chat_cli -p "Why is the sky blue?"
+# python -m scripts.chat_cli -p "Apa ibu kota negara Indonesia?"

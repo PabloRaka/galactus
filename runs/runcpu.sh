@@ -22,8 +22,9 @@ if [ -z "$WANDB_RUN" ]; then
 fi
 
 # train tokenizer on ~2B characters (~34 seconds on my MacBook Pro M3 Max)
-python -m nanochat.dataset -n 8
-python -m scripts.tok_train --max-chars=2000000000
+python -m nanochat.dataset --source climbmix -n 4
+python -m nanochat.dataset --source indonesian -n 1
+python -m scripts.tok_train --max-chars=2000000000 --vocab-size=98304
 python -m scripts.tok_eval
 
 # train a small 6 layer model
@@ -36,6 +37,7 @@ python -m scripts.base_train \
     --max-seq-len=512 \
     --device-batch-size=32 \
     --total-batch-size=16384 \
+    --indonesian-ratio=0.30 \
     --eval-every=100 \
     --eval-tokens=524288 \
     --core-metric-every=-1 \
@@ -46,6 +48,9 @@ python -m scripts.base_eval --device-batch-size=1 --split-tokens=16384 --max-per
 
 # SFT (~10 minutes on my MacBook Pro M3 Max)
 python -m scripts.chat_sft \
+    --alpaca-id-epochs=1 \
+    --reasoning-epochs=1 \
+    --glaive-epochs=1 \
     --eval-every=200 \
     --eval-tokens=524288 \
     --num-iterations=1500 \
