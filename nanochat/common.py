@@ -115,10 +115,19 @@ def download_file_with_lock(url, filename, postprocess_fn=None):
 
     return file_path
 
-def print0(s="",**kwargs):
+def print0(s="", **kwargs):
     ddp_rank = int(os.environ.get('RANK', 0))
     if ddp_rank == 0:
-        print(s, **kwargs)
+        try:
+            print(s, **kwargs)
+        except (UnicodeEncodeError, Exception):
+            import sys
+            enc = getattr(sys.stdout, 'encoding', 'utf-8') or 'utf-8'
+            if isinstance(s, str):
+                safe_str = s.encode(enc, errors='replace').decode(enc)
+                print(safe_str, **kwargs)
+            else:
+                print(s, **kwargs)
 
 def print_banner():
     # Cool DOS Rebel font ASCII banner made with https://manytools.org/hacker-tools/ascii-banner/
@@ -132,7 +141,10 @@ def print_banner():
      ████ █████░░████████ ████ █████░░██████ ░░██████  ████ █████░░███████  ░░█████
     ░░░░ ░░░░░  ░░░░░░░░ ░░░░ ░░░░░  ░░░░░░   ░░░░░░  ░░░░ ░░░░░  ░░░░░░░░   ░░░░░
     """
-    print0(banner)
+    try:
+        print0(banner)
+    except Exception:
+        print0("\n=== NANOCHAT / GALACTUS ===\n")
 
 def is_ddp_requested() -> bool:
     """

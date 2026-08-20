@@ -239,7 +239,10 @@ def disable_fp8(model):
 # Compile the model
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
-model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+if device_type == "cuda":
+    model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+else:
+    print0("Note: Skipping torch.compile on CPU/MPS for maximum platform compatibility.")
 
 # -----------------------------------------------------------------------------
 # Scaling laws and muP extrapolations to determine the optimal training horizon, batch size, learning rates, weight decay.
@@ -469,6 +472,8 @@ while True:
             "The planets of the solar system are:",
             "My favorite color is",
             "If 5*x + 3 = 13, then x is",
+            "Ibu kota negara Indonesia adalah",
+            "Presiden pertama Republik Indonesia adalah",
         ]
         engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
         for prompt in prompts:
