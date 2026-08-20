@@ -7,7 +7,7 @@
 
 ## 🌟 Overview
 
-**Galactus** is a minimal, ultra-efficient, and hackable full-stack LLM harness designed to train, finetune, evaluate, and deploy high-capability language models from scratch on a budget. 
+**Galactus** is a minimal, ultra-efficient, and hackable full-stack LLM harness designed to train, finetune, evaluate, and deploy high-capability language models from scratch on a budget.
 
 Building upon the elegant architecture of `nanochat`, Galactus incorporates state-of-the-art enhancements across **Indonesian-optimized BPE tokenization**, **bilingual pretraining mixtures**, **deep reasoning (CoT)**, **autonomous agentic tool calling**, and **multi-hardware acceleration** (including **AMD Instinct MI300X / ROCm** and **NVIDIA Hopper H100 / FA3**).
 
@@ -16,6 +16,7 @@ Building upon the elegant architecture of `nanochat`, Galactus incorporates stat
 ## 🚀 Key Features & Architectural Upgrades
 
 ### 1. 🔤 98,304 (~96K) Indonesian & Code-Optimized BPE Tokenizer
+
 - **Indonesian Linguistic Support**: Native regex support for Indonesian hyphenated reduplication (kata ulang: *anak-anak*, *berhari-hari*, *bersama-sama*) and clitics/contractions (*-ku*, *-mu*, *-nya*, *'kan*).
 - **Code Literal Preservation**: Hexadecimal (`0xFF00FF`), binary (`0b11010101`), and octal (`0o755`) literals are matched as atomic tokens before 3-digit numeric splitting.
 - **Superior Compression**:
@@ -27,19 +28,23 @@ Building upon the elegant architecture of `nanochat`, Galactus incorporates stat
 - **GPU Matrix-Aligned**: Vocab size of $98,304 = 3 \times 2^{15}$ divides cleanly by 64, 128, and 256 for maximum Tensor Core / Matrix Core throughput.
 
 ### 2. 📚 Bilingual Stream Pretraining
+
 - **ClimbMix-400B (General Web, STEM, Math & Code)**: NVIDIA `ClimbMix-400B` curated educational web corpus, GitHub repositories, and scientific papers.
 - **Indonesian Knowledge (Wikipedia ID)**: Full Indonesian Wikipedia encyclopedic texts (`20231101.id`) for rich vocabulary and cultural knowledge.
 - **Dynamic Sampling**: Configure pretraining bilingual ratios seamlessly:
+
   ```bash
   python -m scripts.base_train --depth 20 --indonesian-ratio 0.30
   ```
 
 ### 3. 🧠 Deep Reasoning & Autonomous Agentic Tool Calling
+
 - **Deep Reasoning (CoT)**: Native `<|thought|>` ... `<|thought_end|>` reasoning tags with supervised loss masking for multi-step thought generation.
 - **Autonomous Tool Execution**: Built-in sandboxed tools (`read_file`, `write_file`, `edit_file`, `grep_search`, `list_files`, `python`, `bash`, `web_search`) with automatic JSON repair, schema validation, and anti-infinite-loop safeguards.
 - **TDD Protocol**: Optional Test-Driven Development system prompt enforcing Red-Green-Refactor cycles before writing production code.
 
 ### 4. ⚡ Multi-Hardware Attention Engine
+
 - **NVIDIA Hopper (H100/H800)**: Direct FlashAttention-3 (`varunneal/flash-attention-3`) integration.
 - **AMD Instinct MI300X / ROCm (CDNA3 - gfx942)**: Native FlashAttention-2 ROCm dispatch via Composable Kernel (CK) & PyTorch ROCm SDPA backend (>800 TFLOPS BF16).
 - **Universal Fallback**: Automatic sliding-window PyTorch SDPA for CPU, Apple Silicon (MPS), and legacy GPUs.
@@ -113,6 +118,7 @@ torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
 ### 4. Supervised Fine-Tuning (SFT)
 
 Galactus SFT trains conversational, reasoning, and tool calling abilities across a balanced multi-task mixture:
+
 - **General Dialogue**: `HuggingFaceTB/smol-smoltalk` (460K rows)
 - **Indonesian Instructions & Chat**: `Ichsan2895/alpaca-gpt4-indonesian` (47.5K rows)
 - **Deep Reasoning (CoT)**: `bespokelabs/Bespoke-Stratos-17k` (16.7K rows)
@@ -203,6 +209,7 @@ galactus/
 ## 🙏 Acknowledgements & Attribution
 
 Galactus is built upon the foundation of **[nanochat](https://github.com/karpathy/nanochat)** by **Andrej Karpathy**. We express our deep appreciation to:
+
 - **Andrej Karpathy** for creating `nanochat` and `nanoGPT`.
 - **Keller Jordan** and the `modded-nanogpt` community for compute-optimal training ideas.
 - **HuggingFace** for `smollm-corpus`, `smoltalk`, and dataset hosting.
